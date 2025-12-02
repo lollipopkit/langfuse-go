@@ -21,6 +21,8 @@ type handler[T any] struct {
 	queue        *queue[T]
 	fn           EventHandler[T]
 	commandCh    chan command
+	tickerUpdate chan time.Duration
+	ticker       *time.Ticker
 	tickerPeriod time.Duration
 }
 
@@ -29,21 +31,25 @@ func newHandler[T any](queue *queue[T], fn EventHandler[T]) *handler[T] {
 		queue:        queue,
 		fn:           fn,
 		commandCh:    make(chan command),
+		tickerUpdate: make(chan time.Duration, 1),
 		tickerPeriod: defaultTickerPeriod,
 	}
 }
 
 func (h *handler[T]) withTick(period time.Duration) *handler[T] {
 	h.tickerPeriod = period
+	if h.ticker != nil {
+		h.tickerUpdate <- period
+	}
 	return h
 }
 
 func (h *handler[T]) listen(ctx context.Context) {
-	ticker := time.NewTicker(h.tickerPeriod)
+	h.ticker = time.NewTicker(h.tickerPeriod)
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-h.ticker.C:
 			go h.handle(ctx)
 		case cmd, ok := <-h.commandCh:
 			if !ok {
@@ -52,9 +58,12 @@ func (h *handler[T]) listen(ctx context.Context) {
 
 			h.handle(ctx)
 			if cmd == commandFlushAndWait {
-				ticker.Stop()
+				h.ticker.Stop()
 				close(h.commandCh)
 			}
+		case newPeriod := <-h.tickerUpdate:
+			h.ticker.Stop()
+			h.ticker = time.NewTicker(newPeriod)
 		}
 	}
 }

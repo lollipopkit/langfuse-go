@@ -38,11 +38,15 @@ func New(ctx context.Context) *Langfuse {
 		),
 	}
 
+	// ensure the default flush interval is applied to the observer ticker
+	l.observer.WithTick(l.flushInterval)
+
 	return l
 }
 
 func (l *Langfuse) WithFlushInterval(d time.Duration) *Langfuse {
 	l.flushInterval = d
+	l.observer.WithTick(d)
 	return l
 }
 
@@ -78,6 +82,10 @@ func (l *Langfuse) Generation(g *model.Generation, parentID *string) (*model.Gen
 		g.TraceID = traceID
 	}
 
+	if g.Type == "" {
+		g.Type = model.ObservationTypeGeneration
+	}
+
 	g.ID = buildID(&g.ID)
 
 	if parentID != nil {
@@ -95,6 +103,40 @@ func (l *Langfuse) Generation(g *model.Generation, parentID *string) (*model.Gen
 	return g, nil
 }
 
+// Observation creates a generic observation (SPAN/GENERATION/EVENT/...) when you
+// don't need the specialized helpers. Type must be set or will default to SPAN.
+func (l *Langfuse) Observation(o *model.Observation, parentID *string) (*model.Observation, error) {
+	if o.TraceID == "" {
+		traceID, err := l.createTrace(o.Name)
+		if err != nil {
+			return nil, err
+		}
+
+		o.TraceID = traceID
+	}
+
+	if o.Type == "" {
+		o.Type = model.ObservationTypeSpan
+	}
+
+	o.ID = buildID(&o.ID)
+
+	if parentID != nil {
+		o.ParentObservationID = *parentID
+	}
+
+	l.observer.Dispatch(
+		model.IngestionEvent{
+			ID:        buildID(nil),
+			Type:      model.IngestionEventTypeObservationCreate,
+			Timestamp: time.Now().UTC(),
+			Body:      o,
+		},
+	)
+
+	return o, nil
+}
+
 func (l *Langfuse) GenerationEnd(g *model.Generation) (*model.Generation, error) {
 	if g.ID == "" {
 		return nil, fmt.Errorf("generation ID is required")
@@ -102,6 +144,10 @@ func (l *Langfuse) GenerationEnd(g *model.Generation) (*model.Generation, error)
 
 	if g.TraceID == "" {
 		return nil, fmt.Errorf("trace ID is required")
+	}
+
+	if g.Type == "" {
+		g.Type = model.ObservationTypeGeneration
 	}
 
 	l.observer.Dispatch(
@@ -143,6 +189,10 @@ func (l *Langfuse) Span(s *model.Span, parentID *string) (*model.Span, error) {
 		s.TraceID = traceID
 	}
 
+	if s.Type == "" {
+		s.Type = model.ObservationTypeSpan
+	}
+
 	s.ID = buildID(&s.ID)
 
 	if parentID != nil {
@@ -170,6 +220,10 @@ func (l *Langfuse) SpanEnd(s *model.Span) (*model.Span, error) {
 		return nil, fmt.Errorf("trace ID is required")
 	}
 
+	if s.Type == "" {
+		s.Type = model.ObservationTypeSpan
+	}
+
 	l.observer.Dispatch(
 		model.IngestionEvent{
 			ID:        buildID(nil),
@@ -182,6 +236,32 @@ func (l *Langfuse) SpanEnd(s *model.Span) (*model.Span, error) {
 	return s, nil
 }
 
+// ObservationUpdate updates a generic observation. The ID and TraceID are required.
+func (l *Langfuse) ObservationUpdate(o *model.Observation) (*model.Observation, error) {
+	if o.ID == "" {
+		return nil, fmt.Errorf("observation ID is required")
+	}
+
+	if o.TraceID == "" {
+		return nil, fmt.Errorf("trace ID is required")
+	}
+
+	if o.Type == "" {
+		o.Type = model.ObservationTypeSpan
+	}
+
+	l.observer.Dispatch(
+		model.IngestionEvent{
+			ID:        buildID(nil),
+			Type:      model.IngestionEventTypeObservationUpdate,
+			Timestamp: time.Now().UTC(),
+			Body:      o,
+		},
+	)
+
+	return o, nil
+}
+
 func (l *Langfuse) Event(e *model.Event, parentID *string) (*model.Event, error) {
 	if e.TraceID == "" {
 		traceID, err := l.createTrace(e.Name)
@@ -190,6 +270,10 @@ func (l *Langfuse) Event(e *model.Event, parentID *string) (*model.Event, error)
 		}
 
 		e.TraceID = traceID
+	}
+
+	if e.Type == "" {
+		e.Type = model.ObservationTypeEvent
 	}
 
 	e.ID = buildID(&e.ID)
@@ -210,6 +294,24 @@ func (l *Langfuse) Event(e *model.Event, parentID *string) (*model.Event, error)
 	return e, nil
 }
 
+// SDKLog sends diagnostic SDK log payloads to Langfuse.
+func (l *Langfuse) SDKLog(log *model.SDKLog) (*model.SDKLog, error) {
+	if log == nil {
+		return nil, fmt.Errorf("log payload is required")
+	}
+
+	l.observer.Dispatch(
+		model.IngestionEvent{
+			ID:        buildID(nil),
+			Type:      model.IngestionEventTypeSDKLog,
+			Timestamp: time.Now().UTC(),
+			Body:      log,
+		},
+	)
+
+	return log, nil
+}
+
 func (l *Langfuse) createTrace(traceName string) (string, error) {
 	trace, errTrace := l.Trace(
 		&model.Trace{
@@ -220,7 +322,7 @@ func (l *Langfuse) createTrace(traceName string) (string, error) {
 		return "", errTrace
 	}
 
-	return trace.ID, fmt.Errorf("unable to get trace ID")
+	return trace.ID, nil
 }
 
 func (l *Langfuse) Flush(ctx context.Context) {

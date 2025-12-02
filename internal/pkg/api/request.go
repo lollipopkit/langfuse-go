@@ -15,7 +15,8 @@ const (
 type Request struct{}
 
 type Ingestion struct {
-	Batch []model.IngestionEvent `json:"batch"`
+	Batch    []model.IngestionEvent `json:"batch"`
+	Metadata any                    `json:"metadata,omitempty"`
 }
 
 func (t *Ingestion) Path() (string, error) {
